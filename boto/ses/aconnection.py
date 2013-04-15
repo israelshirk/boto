@@ -32,8 +32,10 @@ from boto.ses import exceptions as ses_exceptions
 from connection import *
 from urllib import urlencode
 
+from pprint import pprint
+
 from twisted.internet import reactor
-from twisted.internet.defer import Deferred, DeferredList
+from twisted.internet.defer import Deferred, DeferredList, succeed
 from twisted.internet.protocol import Protocol
 from twisted.web.client import Agent, HTTPConnectionPool
 from twisted.web.http_headers import Headers
@@ -57,10 +59,29 @@ class StringProducer(object):
     def stopProducing(self):
         pass
 
+class ResponseReceiver(Protocol):
+    def __init__(self, finished, callback, response, data):
+        self.finished = finished
+        self.body = ""
+        self.callback = callback
+        self.response = response
+        self.data = data
+
+    def dataReceived(self, bytes):
+        self.body += bytes
+
+    def connectionLost(self, reason):
+        # print 'Finished receiving body:', reason.getErrorMessage()
+
+        self.callback(self.response, self.body, self.data)
+
+        self.finished.callback(None)
+
 class ASESConnection(SESConnection):
     ResponseError = BotoServerError
     DefaultRegionName = 'us-east-1'
     DefaultRegionEndpoint = 'email.us-east-1.amazonaws.com'
+    # DefaultRegionEndpoint = 'coast.dev'
     APIVersion = '2010-12-01'
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
@@ -72,11 +93,11 @@ class ASESConnection(SESConnection):
             region = RegionInfo(self, self.DefaultRegionName,
                                 self.DefaultRegionEndpoint)
         self.region = region
-        SESConnection.__init__(self, self.region.endpoint,
-                                   aws_access_key_id, aws_secret_access_key,
-                                   is_secure, port, proxy, proxy_port,
-                                   proxy_user, proxy_pass, debug,
-                                   https_connection_factory, path,
+        SESConnection.__init__(self,
+                                   aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key,
+                                   is_secure=is_secure, port=port, proxy=proxy, proxy_port=proxy_port,
+                                   proxy_user=proxy_user, proxy_pass=proxy_pass, debug=debug,
+                                   https_connection_factory=None, path=path,
                                    security_token=security_token,
                                    validate_certs=validate_certs)
         self.agent = agent
@@ -116,89 +137,77 @@ class ASESConnection(SESConnection):
         """Makes a request to the server, with stock multiple-retry logic."""
         if params is None:
             params = {}
-        http_request = self.build_base_http_request(method, path, auth_path,
+        self.http_request = self.build_base_http_request(method, path, auth_path,
                                                     params, headers, data, host)
 
-        bodyProducer = StringProducer(http_request.body)
+        self.http_request.authorize(connection=self)
 
-        url = http_request.protocol + '://' + self.http_request.host
+        bodyProducer = StringProducer(self.http_request.body)
 
-        if self.http_request.port:
-            url += ':' + self.http_request.port
+        url = self.http_request.protocol + '://' + self.http_request.host
 
         url += self.http_request.path
 
-        if params:
-            url += "?" + urlencode( params )
+        # Twisted sets this again - doing it twice results in a 400 Bad Request...
+        del(self.http_request.headers['Content-Length'])
 
-        ### BEGIN DEBUG ###
-        self.reactor.stop()
-        pprint(http_request.method)
-        pprint(url)
-        pprint(http_request.headers)
-        pprint(http_request.body)
+        for (title, value) in self.http_request.headers.iteritems():
+            if type(value) == type("string"):
+                value = [ value ]
 
-        import pdb; pdb.start_trace()
+                self.http_request.headers[title] = value
 
-        sys.exit(0)
-        ### END DEBUG ###
+        # print self.http_request.method, url, Headers(self.http_request.headers), self.http_request.body
 
-        d = self.agent.request(http_request.method, url, Headers(http_request.headers), bodyProducer=http_request.body)
+        d = self.agent.request(
+            self.http_request.method, 
+            url, 
+            Headers(self.http_request.headers), 
+            bodyProducer=bodyProducer
+            )
 
-        d.addCallback(self.http_request_callback, url, host, channel, raw_message)
-        d.addErrback(self.http_request_errback, channel, raw_message)
+        d.addCallback(self.http_request_callback, data)
+        d.addErrback(self.http_request_errback, data)
 
-    def http_request_callback(response):
-        self.reactor.stop()
+    def http_request_callback(self, response, data):
+        # print "http_request_callback"
 
-        pprint(response)
-        pprint(dir(response))
-        pprint(response.__dict__)
+        # pprint(response.__dict__)
 
-        import pdb; pdb.start_trace()
+        finished = Deferred()
 
-        sys.exit(0)
+        response.deliverBody(ResponseReceiver(finished, self.http_body_received_callback, response, data))
 
-        if response.status == 200:
+        return finished
+
+    def http_body_received_callback(self, response, body, data):
+        if response.code == 200:
             list_markers = ('VerifiedEmailAddresses', 'Identities',
                             'VerificationAttributes', 'SendDataPoints')
             item_markers = ('member', 'item', 'entry')
 
-            e = boto.jsonresponse.Element(list_marker=list_markers,
-                                          item_marker=item_markers)
-            h = boto.jsonresponse.XmlHandler(e, None)
-            h.parse(body)
-            self.callback( e )
+            try:
+                e = boto.jsonresponse.Element(list_marker=list_markers,
+                                              item_marker=item_markers)
+                h = boto.jsonresponse.XmlHandler(e, None)
+                h.parse(body)
+                self.callback( e, data )
+
+                return
+            except Exception, e:
+                print e
+                self.errback( self._handle_error(response, body), data )
+
+                return
         else:
             # HTTP codes other than 200 are considered errors. Go through
             # some error handling to determine which exception gets raised,
             self.errback( self._handle_error(response, body) )
-        
-    def http_request_errback(response):
-        self.reactor.stop()
 
-        pprint(response)
-        pprint(dir(response))
-        pprint(response.__dict__)
+            return
 
-        import pdb; pdb.start_trace()
-
-        sys.exit(0)
-
-        if response.status == 200:
-            list_markers = ('VerifiedEmailAddresses', 'Identities',
-                            'VerificationAttributes', 'SendDataPoints')
-            item_markers = ('member', 'item', 'entry')
-
-            e = boto.jsonresponse.Element(list_marker=list_markers,
-                                          item_marker=item_markers)
-            h = boto.jsonresponse.XmlHandler(e, None)
-            h.parse(message)
-            self.callback( e )
-        else:
-            # HTTP codes other than 200 are considered errors. Go through
-            # some error handling to determine which exception gets raised,
-            self.errback( self._handle_error(response, body) )
+    def http_request_errback(self, failure, data):
+        self.errback( "HTTP Error", data )
 
     def _handle_error(self, response, body):
         """
@@ -206,8 +215,6 @@ class ASESConnection(SESConnection):
         errors share the same HTTP response code, meaning we have to get really
         kludgey and do string searches to figure out what went wrong.
         """
-        boto.log.error('%s %s' % (response.status, response.reason))
-        boto.log.error('%s' % body)
 
         if "Address blacklisted." in body:
             # Delivery failures happened frequently enough with the recipient's
@@ -254,106 +261,7 @@ class ASESConnection(SESConnection):
             # This is either a common AWS error, or one that we don't devote
             # its own exception to.
             ExceptionToRaise = self.ResponseError
-            exc_reason = response.reason
+            exc_reason = "unknown"
 
-        return ExceptionToRaise(response.status, exc_reason, body)
-
-    def send_email(self, source, subject, body, to_addresses,
-                   cc_addresses=None, bcc_addresses=None,
-                   format='text', reply_addresses=None,
-                   return_path=None, text_body=None, html_body=None):
-        """Composes an email message based on input data, and then immediately
-        queues the message for sending.
-
-        :type source: string
-        :param source: The sender's email address.
-
-        :type subject: string
-        :param subject: The subject of the message: A short summary of the
-                        content, which will appear in the recipient's inbox.
-
-        :type body: string
-        :param body: The message body.
-
-        :type to_addresses: list of strings or string
-        :param to_addresses: The To: field(s) of the message.
-
-        :type cc_addresses: list of strings or string
-        :param cc_addresses: The CC: field(s) of the message.
-
-        :type bcc_addresses: list of strings or string
-        :param bcc_addresses: The BCC: field(s) of the message.
-
-        :type format: string
-        :param format: The format of the message's body, must be either "text"
-                       or "html".
-
-        :type reply_addresses: list of strings or string
-        :param reply_addresses: The reply-to email address(es) for the
-                                message. If the recipient replies to the
-                                message, each reply-to address will
-                                receive the reply.
-
-        :type return_path: string
-        :param return_path: The email address to which bounce notifications are
-                            to be forwarded. If the message cannot be delivered
-                            to the recipient, then an error message will be
-                            returned from the recipient's ISP; this message
-                            will then be forwarded to the email address
-                            specified by the ReturnPath parameter.
-
-        :type text_body: string
-        :param text_body: The text body to send with this email.
-
-        :type html_body: string
-        :param html_body: The html body to send with this email.
-
-        """
-        format = format.lower().strip()
-        if body is not None:
-            if format == "text":
-                if text_body is not None:
-                    raise Warning("You've passed in both a body and a "
-                                  "text_body; please choose one or the other.")
-                text_body = body
-            else:
-                if html_body is not None:
-                    raise Warning("You've passed in both a body and an "
-                                  "html_body; please choose one or the other.")
-                html_body = body
-
-        params = {
-            'Source': source,
-            'Message.Subject.Data': subject,
-        }
-
-        if return_path:
-            params['ReturnPath'] = return_path
-
-        if html_body is not None:
-            params['Message.Body.Html.Data'] = html_body
-        if text_body is not None:
-            params['Message.Body.Text.Data'] = text_body
-
-        if(format not in ("text", "html")):
-            raise ValueError("'format' argument must be 'text' or 'html'")
-
-        if(not (html_body or text_body)):
-            raise ValueError("No text or html body found for mail")
-
-        self._build_list_params(params, to_addresses,
-                               'Destination.ToAddresses.member')
-        if cc_addresses:
-            self._build_list_params(params, cc_addresses,
-                                   'Destination.CcAddresses.member')
-
-        if bcc_addresses:
-            self._build_list_params(params, bcc_addresses,
-                                   'Destination.BccAddresses.member')
-
-        if reply_addresses:
-            self._build_list_params(params, reply_addresses,
-                                   'ReplyToAddresses.member')
-
-        self._make_request('SendEmail', params, callback)
+        return ExceptionToRaise(response.code, exc_reason, body)
 
