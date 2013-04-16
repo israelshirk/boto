@@ -55,7 +55,7 @@ class EmailQueuer:
 		d.addCallback(functools.partial(self.got_email_content, d))
 
 	def select_email( self, deferred, ignored ):
-		return self.db_pool.runQuery(" SELECT email FROM anniversary_2013_emails_mojo ")
+		return self.db_pool.runQuery(" SELECT email FROM anniversary_2013_emails_bluehost ")
 
 	def got_email_content( self, deferred, data ):
 		for address in data:

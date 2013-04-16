@@ -82,6 +82,8 @@ class twisted_queue_receiver:
 			if left_to_wait < 0:
 				left_to_wait = 0
 
+			#print "left_to_wait: ", left_to_wait
+
 			yield reactor.callLater(left_to_wait*1.01, self.getMessages)
 
 	def __init__(self, callback, host, port, vhost, username, password, queue, exchange, routing_key, durable=False, rate_limit=5, prefetch_count=150, no_ack=False):

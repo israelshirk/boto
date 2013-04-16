@@ -195,14 +195,14 @@ class ASESConnection(SESConnection):
 
                 return
             except Exception, e:
-                print e
+                # print e
                 self.errback( self._handle_error(response, body), data )
 
                 return
         else:
             # HTTP codes other than 200 are considered errors. Go through
             # some error handling to determine which exception gets raised,
-            self.errback( self._handle_error(response, body) )
+            self.errback( self._handle_error(response, body), data )
 
             return
 

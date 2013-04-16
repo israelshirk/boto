@@ -27,7 +27,7 @@ class EmailSender:
 		contextFactory = WebClientContextFactory()
 
 		pool = HTTPConnectionPool(reactor, persistent=True)
-		pool.maxPersistentPerHost = 60
+		pool.maxPersistentPerHost = 20
 		pool.cachedConnectionTimeout = 10
 		https_agent = Agent(reactor, contextFactory, pool=pool)
 
@@ -68,11 +68,13 @@ class EmailSender:
 		# self.reactor.stop()
 		# import sys; sys.exit(0)
 
-		message_queue = twisted_queue_receiver(self.send_email, "127.0.0.1", 5672, '/', "guest", "guest", queue="huge_email_address_queue", exchange="huge_email_address_queue", routing_key="huge_email_address_queue", rate_limit=40, no_ack=True, durable=True)
+		message_queue = twisted_queue_receiver(self.send_email, "127.0.0.1", 5672, '/', "guest", "guest", queue="huge_email_address_queue", exchange="huge_email_address_queue", routing_key="huge_email_address_queue", rate_limit=65, no_ack=False, durable=True)
 
 	def send_email( self, channel, raw_message ):
 		if not (channel or raw_message):
 			return
+
+		channel.basic_ack(delivery_tag=raw_message.delivery_tag)
 
 		try:
 			message = json.loads(raw_message.content.body)
@@ -85,7 +87,8 @@ class EmailSender:
 
 	def sending_email_succeeded( self, e, data ):
 
-		data = re.sub(r'.*\.member\.1=(.*[^&$]).*', r'\1', urllib.unquote( data ) )
+		data = re.sub(r'.*\.member\.1=(.*[^&$]).*', r'\1', data )
+		data = urllib.unquote( data )
 		data = _mysql.escape_string( data )
 
 		sys.stdout.write('.')
@@ -96,7 +99,7 @@ class EmailSender:
 
 	def sending_email_failed( self, e, data ):
 		data = re.sub(r'.*\.member\.1=(.*[^&$]).*', r'\1', data)
-		e = _mysql.escape_string( e )
+		e = _mysql.escape_string( str( e ) )
 		data = _mysql.escape_string( data )
 
 		sys.stdout.write(',')
