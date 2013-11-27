@@ -172,7 +172,7 @@ def merge_meta(headers, metadata, provider=None):
     for k in metadata.keys():
         if k.lower() in ['cache-control', 'content-md5', 'content-type',
                          'content-encoding', 'content-disposition',
-                         'date', 'expires']:
+                         'expires']:
             final_headers[k] = metadata[k]
         else:
             final_headers[metadata_prefix + k] = metadata[k]
@@ -210,8 +210,7 @@ def retry_url(url, retry_on_404=True, num_retries=10):
             req = urllib2.Request(url)
             r = opener.open(req)
             result = r.read()
-            resp = urllib2.urlopen(req)
-            return resp.read()
+            return result
         except urllib2.HTTPError, e:
             # in 2.6 you use getcode(), in 2.5 and earlier you use code
             if hasattr(e, 'getcode'):
@@ -945,3 +944,24 @@ def compute_hash(fp, buf_size=8192, size=None, hash_algorithm=md5):
     data_size = fp.tell() - spos
     fp.seek(spos)
     return (hex_digest, base64_digest, data_size)
+
+
+def find_matching_headers(name, headers):
+    """
+    Takes a specific header name and a dict of headers {"name": "value"}.
+    Returns a list of matching header names, case-insensitive.
+
+    """
+    return [h for h in headers if h.lower() == name.lower()]
+
+
+def merge_headers_by_name(name, headers):
+    """
+    Takes a specific header name and a dict of headers {"name": "value"}.
+    Returns a string of all header values, comma-separated, that match the
+    input header name, case-insensitive.
+
+    """
+    matching_headers = find_matching_headers(name, headers)
+    return ','.join(str(headers[h]) for h in matching_headers
+                    if headers[h] is not None)

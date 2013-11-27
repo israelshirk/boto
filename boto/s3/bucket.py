@@ -63,6 +63,7 @@ class S3WebsiteEndpointTranslate:
     trans_region['sa-east-1'] = 's3-website-sa-east-1'
     trans_region['ap-northeast-1'] = 's3-website-ap-northeast-1'
     trans_region['ap-southeast-1'] = 's3-website-ap-southeast-1'
+    trans_region['ap-southeast-2'] = 's3-website-ap-southeast-2'
 
     @classmethod
     def translate_region(self, reg):
@@ -301,24 +302,35 @@ class Bucket(object):
                                             upload_id_marker,
                                             headers)
 
+    def _get_all_query_args(self, params, initial_query_string=''):
+        pairs = []
+
+        if initial_query_string:
+            pairs.append(initial_query_string)
+
+        for key, value in params.items():
+            key = key.replace('_', '-')
+            if key == 'maxkeys':
+                key = 'max-keys'
+            if isinstance(value, unicode):
+                value = value.encode('utf-8')
+            if value is not None and value != '':
+                pairs.append('%s=%s' % (
+                    urllib.quote(key),
+                    urllib.quote(str(value)
+                )))
+
+        return '&'.join(pairs)
+
     def _get_all(self, element_map, initial_query_string='',
                  headers=None, **params):
-        l = []
-        for k, v in params.items():
-            k = k.replace('_', '-')
-            if  k == 'maxkeys':
-                k = 'max-keys'
-            if isinstance(v, unicode):
-                v = v.encode('utf-8')
-            if v is not None and v != '':
-                l.append('%s=%s' % (urllib.quote(k), urllib.quote(str(v))))
-        if len(l):
-            s = initial_query_string + '&' + '&'.join(l)
-        else:
-            s = initial_query_string
+        query_args = self._get_all_query_args(
+            params,
+            initial_query_string=initial_query_string
+        )
         response = self.connection.make_request('GET', self.name,
                                                 headers=headers,
-                                                query_args=s)
+                                                query_args=query_args)
         body = response.read()
         boto.log.debug(body)
         if response.status == 200:
@@ -329,6 +341,20 @@ class Bucket(object):
         else:
             raise self.connection.provider.storage_response_error(
                 response.status, response.reason, body)
+
+    def validate_kwarg_names(self, kwargs, names):
+        """
+        Checks that all named arguments are in the specified list of names.
+
+        :type kwargs: dict
+        :param kwargs: Dictionary of kwargs to validate.
+
+        :type names: list
+        :param names: List of possible named arguments.
+        """
+        for kwarg in kwargs:
+            if kwarg not in names:
+                raise TypeError('Invalid argument "%s"!' % kwarg)
 
     def get_all_keys(self, headers=None, **params):
         """
@@ -359,6 +385,8 @@ class Bucket(object):
         :return: The result from S3 listing the keys requested
 
         """
+        self.validate_kwarg_names(params, ['maxkeys', 'max_keys', 'prefix',
+                                           'marker', 'delimiter'])
         return self._get_all([('Contents', self.key_class),
                               ('CommonPrefixes', Prefix)],
                              '', headers, **params)
@@ -396,10 +424,23 @@ class Bucket(object):
         :rtype: ResultSet
         :return: The result from S3 listing the keys requested
         """
+        self.validate_get_all_versions_params(params)
         return self._get_all([('Version', self.key_class),
                               ('CommonPrefixes', Prefix),
                               ('DeleteMarker', DeleteMarker)],
                              'versions', headers, **params)
+
+    def validate_get_all_versions_params(self, params):
+        """
+        Validate that the parameters passed to get_all_versions are valid.
+        Overridden by subclasses that allow a different set of parameters.
+
+        :type params: dict
+        :param params: Parameters to validate.
+        """
+        self.validate_kwarg_names(
+                params, ['maxkeys', 'max_keys', 'prefix', 'key_marker',
+                         'version_id_marker', 'delimiter'])
 
     def get_all_multipart_uploads(self, headers=None, **params):
         """
@@ -439,6 +480,8 @@ class Bucket(object):
         :return: The result from S3 listing the uploads requested
 
         """
+        self.validate_kwarg_names(params, ['max_uploads', 'key_marker',
+                                           'upload_id_marker'])
         return self._get_all([('Upload', MultiPartUpload),
                               ('CommonPrefixes', Prefix)],
                              'uploads', headers, **params)
@@ -682,7 +725,8 @@ class Bucket(object):
             if self.name == src_bucket_name:
                 src_bucket = self
             else:
-                src_bucket = self.connection.get_bucket(src_bucket_name)
+                src_bucket = self.connection.get_bucket(
+                    src_bucket_name, validate=False)
             acl = src_bucket.get_xml_acl(src_key_name)
         if encrypt_key:
             headers[provider.server_side_encryption_header] = 'AES256'
@@ -1289,6 +1333,7 @@ class Bucket(object):
             * ErrorDocument
 
               * Key : name of object to serve when an error occurs
+
         """
         return self.get_website_configuration_with_xml(headers)[0]
 
@@ -1309,15 +1354,24 @@ class Bucket(object):
 
         :rtype: 2-Tuple
         :returns: 2-tuple containing:
-        1) A dictionary containing a Python representation
-                  of the XML response. The overall structure is:
-          * WebsiteConfiguration
-            * IndexDocument
-              * Suffix : suffix that is appended to request that
-                is for a "directory" on the website endpoint
-              * ErrorDocument
-                * Key : name of object to serve when an error occurs
-        2) unparsed XML describing the bucket's website configuration.
+
+            1) A dictionary containing a Python representation \
+                of the XML response. The overall structure is:
+
+              * WebsiteConfiguration
+
+                * IndexDocument
+
+                  * Suffix : suffix that is appended to request that \
+                    is for a "directory" on the website endpoint
+
+                  * ErrorDocument
+
+                    * Key : name of object to serve when an error occurs
+
+
+            2) unparsed XML describing the bucket's website configuration
+
         """
 
         body = self.get_website_configuration_xml(headers=headers)
